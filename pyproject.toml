@@ -15,4 +15,5 @@ dependencies = [
     "setuptools",
     "wheel",
     "packaging",
+    "build"
 ]
