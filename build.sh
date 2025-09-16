@@ -3,10 +3,11 @@ set -euo pipefail
 
 PYTHON_VERSIONS=("3.12" "3.13")
 TORCH_VERSIONS=("2.8.0" "2.7.1" "2.6.0")
-CUDA_VERSIONS=("cu126" "cu128" "cu129")
-FLASH_ATTN_VERSIONS=("2.8.2" "2.8.3" "2.7.4")
+CUDA_VERSIONS=("cu126" "cu128")
+FLASH_ATTN_VERSIONS=("2.8.2" "2.8.3")
 
-export MAX_JOBS=64
+export NPROC=$(nproc)
+export MAX_JOBS=32
 
 BASE_DIST_DIR="$PWD/dist"
 BASE_BUILD_DIR="$PWD/build"
@@ -57,7 +58,9 @@ for PYTHON_VERSION in "${PYTHON_VERSIONS[@]}"; do
                 cd flash-attention
 
                 echo "Building wheel... (This may take several minutes)"
-                FLASH_ATTENTION_FORCE_BUILD=TRUE uv run setup.py bdist_wheel
+                FLASH_ATTENTION_FORCE_BUILD=TRUE uv run python setup.py build_ext -j${NPROC} --inplace
+                uv run python -m build --wheel --no-isolation
+
                 echo "Renaming the wheel file..."
                 BASE_WHEEL_NAME=$(basename $(ls dist/*.whl | head -n 1))
                 NEW_WHEEL_NAME=$(echo $BASE_WHEEL_NAME | sed "s/-$FLASH_ATTN_VERSION-/-$FLASH_ATTN_VERSION+${CUDA_VERSION}torch${MATRIX_TORCH_VERSION}-/")
