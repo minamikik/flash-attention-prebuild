@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1.4
 
-ARG CUDA_VERSION=12.9.1
+ARG CUDA_VERSION=12.8.1
 ARG IMAGE_TYPE=cudnn-devel
 ARG OS_VERSION=ubuntu22.04
-FROM nvidia/cuda:${CUDA_VERSION}-${IMAGE_TYPE}-${OS_VERSION}
+FROM nvcr.io/nvidia/cuda:${CUDA_VERSION}-${IMAGE_TYPE}-${OS_VERSION}
 
 ARG PYTHON_VERSION=3.12
 
@@ -37,8 +37,7 @@ RUN touch ~/.bashrc && \
 ENV PATH="/root/.local/bin:${PATH}"
 ENV UV_LINK_MODE=copy
 ENV UV_COMPILE_BYTECODE=1
-ENV UV_NO_CACHE=1
-
+# ENV UV_NO_CACHE=1
 
 # Finalize
 CMD ["bash"]
