@@ -12,8 +12,8 @@ export CIBW_BUILD_VERBOSITY=3
 : "${TORCH_VERSIONS:=2.8 2.7 2.6}"
 : "${CUDA_VERSIONS:=126 128}"
 : "${CUDA_ARCHS:=80 86 89 90 120}"  # SM values
-: "${PY_LINUX:=cp312 cp313}"
-: "${PY_WINDOWS:=cp312 cp313}"
+: "${PYTHON_VERSIONS:=cp312 cp313}"
+: "${PLATFORMS:=linux windows}"
 : "${MAX_JOBS:=32}"
 : "${NVCC_THREADS:=4}"
 : "${OVERWRITE:=false}"  # Set to true to rebuild existing wheels
@@ -102,9 +102,9 @@ build_wheel() {
   local fa_ver=$1 torch=$2 cuda=$3 arch=$4 pyver=$5 os=$6
   
   # Check if already exists
-  local wheel_name=$(get_wheel_name "$fa_ver" "$torch" "$cuda" "$arch" "$pyver" "$os")
-  if [[ -f "${OUT_DIR}/${wheel_name}" ]] && [[ "$OVERWRITE" != "true" ]]; then
-    log "Skip: $wheel_name already exists"
+  local pattern="flash_attn-${fa_ver}+cu${cuda}torch${torch}sm${arch}-${pyver}-${pyver}-*.whl"
+  if ls "${OUT_DIR}"/${pattern} >/dev/null 2>&1 && [[ "$OVERWRITE" != "true" ]]; then
+    log "Skip: wheel already exists matching pattern: $pattern"
     return 0
   fi
   
@@ -124,7 +124,7 @@ build_wheel() {
     setup_cuda_win "$cuda" || { log "CUDA $cuda not configured on Windows"; return 1; }
   fi
   
-  log "Building: ${wheel_name}"
+  log "Building: flash_attn-${fa_ver}+cu${cuda}torch${torch}sm${arch}-${pyver}-${pyver}-${os}"
   
   # Common environment
   local env="MAX_JOBS=${MAX_JOBS} NVCC_THREADS=${NVCC_THREADS} \
@@ -138,13 +138,19 @@ build_wheel() {
     CIBW_OUTPUT_DIR="$OUT_DIR" \
     CIBW_MANYLINUX_X86_64_IMAGE="$image" \
     CIBW_ENVIRONMENT="$env CXXFLAGS='-D_GLIBCXX_USE_CXX11_ABI=1'" \
-    uvx cibuildwheel --platform $platform --config-file "$CONFIG_FILE" "$src"
+    uvx --with pip cibuildwheel --platform $platform --config-file "$CONFIG_FILE" "$src" || {
+      log "ERROR: Build failed for ${fa_ver}+cu${cuda}torch${torch}sm${arch}-${pyver}-${os}"
+      return 1
+    }
   else
     CIBW_PLATFORM=$platform \
     CIBW_BUILD="$build_tag" \
     CIBW_OUTPUT_DIR="$OUT_DIR" \
     CIBW_ENVIRONMENT_WINDOWS="$env CMAKE_GENERATOR=Ninja" \
-    uvx cibuildwheel --platform $platform --config-file "$CONFIG_FILE" "$src"
+    uvx --with pip cibuildwheel --platform $platform --config-file "$CONFIG_FILE" "$src" || {
+      log "ERROR: Build failed for ${fa_ver}+cu${cuda}torch${torch}sm${arch}-${pyver}-${os}"
+      return 1
+    }
   fi
   
   # Rename wheel to include build info
@@ -175,14 +181,10 @@ for fa_ver in $FA_VERSIONS; do
       is_valid_combo "$torch" "$cuda" || continue
       
       for arch in $CUDA_ARCHS; do
-        # Linux builds
-        for pyver in $PY_LINUX; do
-          build_wheel "$fa_ver" "$torch" "$cuda" "$arch" "$pyver" "linux"
-        done
-        
-        # Windows builds
-        for pyver in $PY_WINDOWS; do
-          build_wheel "$fa_ver" "$torch" "$cuda" "$arch" "$pyver" "windows"
+        for platform in $PLATFORMS; do
+          for pyver in $PYTHON_VERSIONS; do
+            build_wheel "$fa_ver" "$torch" "$cuda" "$arch" "$pyver" "$platform" || true
+          done
         done
       done
     done
