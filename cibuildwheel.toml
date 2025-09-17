@@ -1,20 +1,44 @@
 [tool.cibuildwheel]
-build-frontend = { name = "pip", args = ["--no-build-isolation"] }
 skip = "*-musllinux_*"
-environment-pass = ["MAX_JOBS", "TORCH_CUDA_ARCH_LIST", "TORCH_SPEC", "CUDA_CHANNEL"]
+# 必要な環境変数をビルド環境へ通す
+environment-pass = [
+  "MAX_JOBS",
+  "TORCH_CUDA_ARCH_LIST",
+  "TORCH_SPEC",
+  "CUDA_CHANNEL",
+  "FLASH_ATTN_CUDA_ARCHS",
+  "NVCC_THREADS",
+]
+# インポートだけの簡易テスト
 test-command = "python -c \"import flash_attn; print('import-ok')\""
 
 [tool.cibuildwheel.linux]
-repair-wheel-command = "auditwheel repair -w {dest_dir} {wheel}"
 before-build = """
-python -m pip install -U pip wheel packaging ninja
+python -m pip install -U pip setuptools wheel packaging ninja
 python -m pip install "torch==$TORCH_SPEC" --index-url https://download.pytorch.org/whl/$CUDA_CHANNEL
 """
 
+# libcudart を除外せずに同梱する。torch の .so と libcuda は除外。
+repair-wheel-command = """
+LIBTORCH=$(python -c "import os, torch; print(os.path.join(os.path.dirname(torch.__file__), 'lib'))")
+export LD_LIBRARY_PATH="$LIBTORCH:/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib:$LD_LIBRARY_PATH"
+auditwheel repair -w {dest_dir} {wheel} \
+  --exclude libc10.so \
+  --exclude libc10_cuda.so \
+  --exclude libtorch.so \
+  --exclude libtorch_cuda.so \
+  --exclude libtorch_cpu.so \
+  --exclude libtorch_python.so \
+  --exclude libcuda.so.1
+"""
+
 [tool.cibuildwheel.windows]
-environment = { CMAKE_GENERATOR = "Ninja" }
+environment = { CMAKE_GENERATOR = "Ninja", FLASH_ATTENTION_BUILD_TYPE = "wheel" }
+before-all = '''
+python -m pip install -U pip setuptools wheel packaging ninja
+'''
 before-build = '''
-python -m pip install -U pip wheel packaging ninja
-python -m pip install "torch==$env:TORCH_SPEC" --index-url "https://download.pytorch.org/whl/$env:CUDA_CHANNEL"
+python -m pip install -U pip setuptools wheel packaging ninja
+python -m pip install torch==%TORCH_SPEC% --index-url https://download.pytorch.org/whl/%CUDA_CHANNEL%
 python -m pip install triton-windows
 '''
