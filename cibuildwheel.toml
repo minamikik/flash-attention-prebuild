@@ -1,0 +1,20 @@
+[tool.cibuildwheel]
+build-frontend = { name = "pip", args = ["--no-build-isolation"] }
+skip = "*-musllinux_*"
+environment-pass = ["MAX_JOBS", "TORCH_CUDA_ARCH_LIST", "TORCH_SPEC", "CUDA_CHANNEL"]
+test-command = "python -c \"import flash_attn; print('import-ok')\""
+
+[tool.cibuildwheel.linux]
+repair-wheel-command = "auditwheel repair -w {dest_dir} {wheel}"
+before-build = """
+python -m pip install -U pip wheel packaging ninja
+python -m pip install "torch==$TORCH_SPEC" --index-url https://download.pytorch.org/whl/$CUDA_CHANNEL
+"""
+
+[tool.cibuildwheel.windows]
+environment = { CMAKE_GENERATOR = "Ninja" }
+before-build = '''
+python -m pip install -U pip wheel packaging ninja
+python -m pip install "torch==$env:TORCH_SPEC" --index-url "https://download.pytorch.org/whl/$env:CUDA_CHANNEL"
+python -m pip install triton-windows
+'''

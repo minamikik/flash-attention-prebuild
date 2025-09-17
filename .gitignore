@@ -178,3 +178,5 @@ uv.lock
 .python-version
 build/*
 dist/*
+src/*
+wheelhouse/*
