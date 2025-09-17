@@ -15,7 +15,7 @@ export CIBW_BUILD_VERBOSITY=3
 : "${PY_LINUX:=cp312 cp313}"
 : "${PY_WINDOWS:=cp312 cp313}"
 : "${MAX_JOBS:=32}"
-: "${NVCC_THREADS:=2}"
+: "${NVCC_THREADS:=4}"
 : "${OVERWRITE:=false}"  # Set to true to rebuild existing wheels
 
 # Directories

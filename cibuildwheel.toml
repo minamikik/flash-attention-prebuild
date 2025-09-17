@@ -1,4 +1,5 @@
 [tool.cibuildwheel]
+build-frontend = { name = "pip", args = ["--no-build-isolation"] }
 skip = "*-musllinux_*"
 # 必要な環境変数をビルド環境へ通す
 environment-pass = [
