@@ -36,10 +36,9 @@ auditwheel repair -w {dest_dir} {wheel} \
 [tool.cibuildwheel.windows]
 environment = { CMAKE_GENERATOR = "Ninja", FLASH_ATTENTION_BUILD_TYPE = "wheel" }
 before-all = '''
+git config --global core.longpaths true
 python -m pip install -U pip setuptools wheel packaging ninja
 '''
 before-build = '''
-python -m pip install -U pip setuptools wheel packaging ninja
-python -m pip install torch==%TORCH_SPEC% --index-url https://download.pytorch.org/whl/%CUDA_CHANNEL%
-python -m pip install triton-windows
+python -m pip install -U pip setuptools wheel packaging ninja && python -m pip install torch==%TORCH_SPEC% --index-url https://download.pytorch.org/whl/%CUDA_CHANNEL% && python -m pip install triton-windows
 '''
