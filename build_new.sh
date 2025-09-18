@@ -146,8 +146,13 @@ get_wheel_name() {
 build_wheel() {
   local fa_ver=$1 torch=$2 cuda=$3 arch=$4 pyver=$5 os=$6
   
-  # Check if already exists
-  local pattern="flash_attn-${fa_ver}+cu${cuda}torch${torch}sm${arch}-${pyver}-${pyver}-*.whl"
+  # Check if already exists (platform-specific)
+  local pattern
+  if [[ "$os" == "linux" ]]; then
+    pattern="flash_attn-${fa_ver}+cu${cuda}torch${torch}sm${arch}-${pyver}-${pyver}-*manylinux*.whl"
+  else
+    pattern="flash_attn-${fa_ver}+cu${cuda}torch${torch}sm${arch}-${pyver}-${pyver}-*win_amd64*.whl"
+  fi
   if ls "${OUT_DIR}"/${pattern} >/dev/null 2>&1 && [[ "$OVERWRITE" != "true" ]]; then
     log "Skip: wheel already exists matching pattern: $pattern"
     return 0
@@ -223,14 +228,14 @@ for ver in $FA_VERSIONS; do
 done
 
 log "Building wheels..."
-for fa_ver in $FA_VERSIONS; do
-  for torch in $TORCH_VERSIONS; do
-    for cuda in $CUDA_VERSIONS; do
-      for arch in $CUDA_ARCHS; do
-        # Check full torch-cuda-arch combination
-        is_valid_combination "$torch" "$cuda" "$arch" || continue
-        
-        for platform in $PLATFORMS; do
+for platform in $PLATFORMS; do
+  for fa_ver in $FA_VERSIONS; do
+    for torch in $TORCH_VERSIONS; do
+      for cuda in $CUDA_VERSIONS; do
+        for arch in $CUDA_ARCHS; do
+          # Check full torch-cuda-arch combination
+          is_valid_combination "$torch" "$cuda" "$arch" || continue
+          
           for pyver in $PYTHON_VERSIONS; do
             build_wheel "$fa_ver" "$torch" "$cuda" "$arch" "$pyver" "$platform" || true
           done
