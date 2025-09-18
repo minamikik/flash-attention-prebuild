@@ -9,11 +9,11 @@ export CIBW_BUILD_VERBOSITY=3
 # ======== Configuration ========
 : "${FA_REPO:=https://github.com/Dao-AILab/flash-attention.git}"
 : "${FA_VERSIONS:=2.8.2}"
-: "${TORCH_VERSIONS:=2.8 2.7 2.6}"
+: "${TORCH_VERSIONS:=2.8 2.6}"
 : "${CUDA_VERSIONS:=126 128}"
-: "${CUDA_ARCHS:=80 86 89 90 120}"  # SM values
+: "${CUDA_ARCHS:=80 86 89 90}"  # SM values
 : "${PYTHON_VERSIONS:=cp312 cp313}"
-: "${PLATFORMS:=linux windows}"
+: "${PLATFORMS:=linux}"
 : "${MAX_JOBS:=32}"
 : "${NVCC_THREADS:=4}"
 : "${OVERWRITE:=false}"  # Set to true to rebuild existing wheels
@@ -187,7 +187,7 @@ build_wheel() {
     CIBW_BUILD="$build_tag" \
     CIBW_OUTPUT_DIR="$OUT_DIR" \
     CIBW_MANYLINUX_X86_64_IMAGE="$image" \
-    CIBW_ENVIRONMENT="$env CXXFLAGS='-D_GLIBCXX_USE_CXX11_ABI=1'" \
+    CIBW_ENVIRONMENT="$env FLASH_ATTENTION_FORCE_BUILD=TRUE CXXFLAGS='-D_GLIBCXX_USE_CXX11_ABI=1'" \
     uvx --with pip cibuildwheel --platform $platform --config-file "$CONFIG_FILE" "$src" || {
       log "ERROR: Build failed for ${fa_ver}+cu${cuda}torch${torch}sm${arch}-${pyver}-${os}"
       return 1
@@ -196,7 +196,7 @@ build_wheel() {
     CIBW_PLATFORM=$platform \
     CIBW_BUILD="$build_tag" \
     CIBW_OUTPUT_DIR="$OUT_DIR" \
-    CIBW_ENVIRONMENT_WINDOWS="$env CMAKE_GENERATOR=Ninja" \
+    CIBW_ENVIRONMENT_WINDOWS="$env FLASH_ATTENTION_FORCE_BUILD=TRUE CL='/utf-8 /MP%MAX_JOBS% /FS' CMAKE_GENERATOR=Ninja FLASH_ATTENTION_BUILD_TYPE=wheel DISTUTILS_USE_SDK=1" \
     uvx --with pip cibuildwheel --platform $platform --config-file "$CONFIG_FILE" "$src" || {
       log "ERROR: Build failed for ${fa_ver}+cu${cuda}torch${torch}sm${arch}-${pyver}-${os}"
       return 1

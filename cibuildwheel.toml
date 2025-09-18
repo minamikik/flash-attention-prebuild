@@ -1,5 +1,5 @@
 [tool.cibuildwheel]
-build-frontend = { name = "pip", args = ["--no-build-isolation"] }
+build-frontend = { name = "build", args = ["--no-isolation"] }
 skip = "*-musllinux_*"
 # 必要な環境変数をビルド環境へ通す
 environment-pass = [
@@ -14,9 +14,19 @@ environment-pass = [
 test-command = "python -c \"import flash_attn; print('import-ok')\""
 
 [tool.cibuildwheel.linux]
+before-all = """
+curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+"""
+
 before-build = """
-python -m pip install -U pip setuptools wheel packaging ninja
-python -m pip install "torch==$TORCH_SPEC" --index-url https://download.pytorch.org/whl/$CUDA_CHANNEL
+PY=$(python -c 'import sys; print(sys.executable)')
+uv pip install --python "$PY" --system -U pip setuptools wheel packaging ninja psutil
+uv pip install --python "$PY" --system -U "torch==$TORCH_SPEC" --index-url https://download.pytorch.org/whl/$CUDA_CHANNEL
+"""
+
+before-test = """
+pip install -U pip
+pip install "torch==$TORCH_SPEC" --index-url https://download.pytorch.org/whl/$CUDA_CHANNEL
 """
 
 # libcudart を除外せずに同梱する。torch の .so と libcuda は除外。
@@ -34,11 +44,14 @@ auditwheel repair -w {dest_dir} {wheel} \
 """
 
 [tool.cibuildwheel.windows]
-environment = { CMAKE_GENERATOR = "Ninja", FLASH_ATTENTION_BUILD_TYPE = "wheel" }
 before-all = '''
-git config --global core.longpaths true
-python -m pip install -U pip setuptools wheel packaging ninja
+git config --global core.longpaths true && call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat" x64
 '''
+
 before-build = '''
-python -m pip install -U pip setuptools wheel packaging ninja && python -m pip install torch==%TORCH_SPEC% --index-url https://download.pytorch.org/whl/%CUDA_CHANNEL% && python -m pip install triton-windows
+uv pip install -U pip setuptools wheel packaging ninja cmake psutil && uv pip install torch==%TORCH_SPEC% --index-url https://download.pytorch.org/whl/%CUDA_CHANNEL% && uv pip install triton-windows
 '''
+
+before-test = """
+uv pip install -U pip && uv pip install "torch==$TORCH_SPEC" --index-url https://download.pytorch.org/whl/$CUDA_CHANNEL && uv pip install triton-windows
+"""

@@ -181,3 +181,4 @@ dist/*
 src/*
 wheelhouse/*
 CLAUDE.md
+sandbox/*
