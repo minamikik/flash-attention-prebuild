@@ -66,8 +66,9 @@ is_valid_combination() {
   # Check full torch-cuda-arch combination
   local key="${torch}-${cuda}-${arch}"
   
-  if [[ -n "${COMPAT_MATRIX[$key]}" ]]; then
-    local channel="${COMPAT_MATRIX[$key]}"
+  # Check if key exists in array (use ${var:-} to handle unbound)
+  local channel="${COMPAT_MATRIX[$key]:-}"
+  if [[ -n "$channel" ]]; then
     
     # Log info for special architectures
     case "$arch" in

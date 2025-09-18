@@ -180,3 +180,4 @@ build/*
 dist/*
 src/*
 wheelhouse/*
+CLAUDE.md
