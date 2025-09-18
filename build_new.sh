@@ -48,6 +48,66 @@ is_valid_combo() {
   esac
 }
 
+# Check PyTorch/SM architecture compatibility
+# Based on official PyTorch CUDA architecture support
+is_valid_arch() {
+  local torch=$1 cuda=$2 arch=$3
+  
+  # Blackwell architecture support (SM100 for B100/B200, SM120 for RTX 5090):
+  # - PyTorch 2.8+ supports both SM100 and SM120
+  # - SM120 is NOT supported in CUDA 12.6
+  if [[ "$arch" == "100" || "$arch" == "120" ]]; then
+    local gpu_type="B100/B200"
+    [[ "$arch" == "120" ]] && gpu_type="RTX 5090"
+    
+    # SM120 is not supported in CUDA 12.6
+    if [[ "$arch" == "120" && "$cuda" == "126" ]]; then
+      log "Skip: SM${arch} (${gpu_type}) is not supported in CUDA 12.6"
+      return 1
+    fi
+    
+    # SM100 and SM120 require PyTorch 2.8+
+    if [[ "$torch" == "2.8" ]] && [[ "$cuda" == "128" || "$cuda" == "129" ]]; then
+      log "Info: SM${arch} (Blackwell ${gpu_type}) supported in PyTorch ${torch} with CUDA 12.${cuda:2}"
+      return 0
+    else
+      log "Skip: SM${arch} (Blackwell ${gpu_type}) requires PyTorch 2.8+ with CUDA 12.8+"
+      return 1
+    fi
+  fi
+  
+  # PyTorch 2.8+ with CUDA 12.8/12.9 removes Maxwell (5x) and Pascal (6x) support
+  if [[ "$torch" == "2.8" ]] && [[ "$cuda" == "128" || "$cuda" == "129" ]]; then
+    case "$arch" in
+      50|52|53)  # Maxwell
+        log "Skip: SM${arch} (Maxwell) not supported in PyTorch ${torch} with CUDA 12.${cuda:2}"
+        return 1 ;;
+      60|61|62)  # Pascal
+        log "Skip: SM${arch} (Pascal) not supported in PyTorch ${torch} with CUDA 12.${cuda:2}"
+        return 1 ;;
+    esac
+  fi
+  
+  # Supported architectures:
+  # PyTorch 2.1-2.6: SM50, SM60, SM70, SM75, SM80, SM86, SM89, SM90
+  # PyTorch 2.8+: SM50, SM60, SM70, SM75, SM80, SM86, SM89, SM90, SM100, SM120
+  # Note: Maxwell (5x) and Pascal (6x) are removed in PyTorch 2.8 with CUDA 12.8/12.9
+  
+  # Common supported architectures
+  case "$arch" in
+    70|75|80|86|89|90) return 0 ;;  # Volta/Turing/Ampere/Ada/Hopper
+    50|52|53|60|61|62)  # Maxwell/Pascal - check version compatibility
+      if [[ "$torch" == "2.6" || "$torch" == "2.7" ]]; then
+        return 0
+      fi
+      ;;
+  esac
+  
+  # Unknown architecture - skip with warning
+  log "Warning: Unknown architecture SM${arch} - skipping"
+  return 1
+}
+
 # Convert arch to decimal (86->8.6, 120->12.0)
 arch_to_decimal() {
   local arch=$1
@@ -181,6 +241,9 @@ for fa_ver in $FA_VERSIONS; do
       is_valid_combo "$torch" "$cuda" || continue
       
       for arch in $CUDA_ARCHS; do
+        # Skip invalid architecture combinations
+        is_valid_arch "$torch" "$cuda" "$arch" || continue
+        
         for platform in $PLATFORMS; do
           for pyver in $PYTHON_VERSIONS; do
             build_wheel "$fa_ver" "$torch" "$cuda" "$arch" "$pyver" "$platform" || true
