@@ -6,13 +6,13 @@ set -euo pipefail
 # =============================================================================
 CIBW_BUILD_VERBOSITY="${CIBW_BUILD_VERBOSITY:-1}"
 FA_REPO="${FA_REPO:-https://github.com/Dao-AILab/flash-attention.git}"
-FA_VERSIONS="${FA_VERSIONS:-2.8.2 2.8.3}"
+FA_VERSIONS="${FA_VERSIONS:-2.8.2}"
 TORCH_VERSIONS="${TORCH_VERSIONS:-2.8 2.6}"
 CUDA_VERSIONS="${CUDA_VERSIONS:-126 128 129}"
 CUDA_ARCHS="${CUDA_ARCHS:-80 86 89 120}"
 PYTHON_VERSIONS="${PYTHON_VERSIONS:-cp312 cp313}"
 PLATFORMS="${PLATFORMS:-linux}"
-MAX_JOBS="${MAX_JOBS:-12}"
+MAX_JOBS="${MAX_JOBS:-16}"
 NVCC_THREADS="${NVCC_THREADS:-2}"
 OVERWRITE="${OVERWRITE:-false}"
 
@@ -238,8 +238,12 @@ build_wheel() {
   
   log "Building for PyTorch ${torch} + CUDA ${cuda} with architectures: ${archs} (filtered from CUDA_ARCHS: ${CUDA_ARCHS})"
   
-  # Check for existing wheel
-  local pattern="flash_attn-${fa_ver}+cu${cuda}torch${torch}-${pyver}-${pyver}-*.whl"
+  # Check for existing wheel (platform-specific)
+  if [[ "$os" == "linux" ]]; then
+    local pattern="flash_attn-${fa_ver}+cu${cuda}torch${torch}-${pyver}-${pyver}-manylinux*.whl"
+  else
+    local pattern="flash_attn-${fa_ver}+cu${cuda}torch${torch}-${pyver}-${pyver}-win_amd64.whl"
+  fi
   if [[ "$OVERWRITE" != "true" ]] && ls "${OUT_DIR}"/${pattern} 2>/dev/null | grep -q .; then
     local existing_wheel=$(ls "${OUT_DIR}"/${pattern} 2>/dev/null | head -n1)
     log "Wheel already exists: $(basename "$existing_wheel"), skipping"
@@ -252,15 +256,21 @@ build_wheel() {
   # Convert architectures to decimal format
   local torch_arch=$(archs_to_decimal_list "$archs")
   
+  # Create temporary output directory for this build
+  local temp_dir="${ROOT_DIR}/temp/build_temp_${fa_ver}_${torch}_${cuda}_${pyver}_${os}_$$"
+  mkdir -p "$temp_dir"
+  
   # Determine platform and build tag
   local platform
-  local build_tag="${pyver}-*"
+  local build_tag
   if [[ "$os" == "linux" ]]; then
     platform="linux"
+    build_tag="${pyver}-*linux*"
     local image="${LINUX_IMAGES[$cuda]}"
     [[ -z "$image" ]] && die "No Linux image defined for CUDA ${cuda}"
   else
     platform="windows"
+    build_tag="${pyver}-*win_amd64"
     setup_cuda_win "$cuda"
   fi
   
@@ -269,14 +279,14 @@ build_wheel() {
   local env=(
     "CIBW_PLATFORM=$platform"
     "CIBW_BUILD=$build_tag"
-    "CIBW_OUTPUT_DIR=$OUT_DIR"
+    "CIBW_OUTPUT_DIR=$temp_dir"
   )
   
   if [[ "$os" == "linux" ]]; then
     env+=("CIBW_MANYLINUX_X86_64_IMAGE=$image")
-    env+=("CIBW_ENVIRONMENT=TORCH_SPEC=$torch CUDA_CHANNEL=cu$cuda TORCH_CUDA_ARCH_LIST='$torch_arch' MAX_JOBS=$MAX_JOBS NVCC_THREADS=$NVCC_THREADS FLASH_ATTN_CUDA_ARCHS='$torch_arch'")
+    env+=("CIBW_ENVIRONMENT=FLASH_ATTENTION_FORCE_BUILD=TRUE TORCH_SPEC=$torch CUDA_CHANNEL=cu$cuda TORCH_CUDA_ARCH_LIST='$torch_arch' MAX_JOBS=$MAX_JOBS NVCC_THREADS=$NVCC_THREADS FLASH_ATTN_CUDA_ARCHS='$torch_arch'")
   else
-    env+=("CIBW_ENVIRONMENT_WINDOWS=TORCH_SPEC=$torch CUDA_CHANNEL=cu$cuda TORCH_CUDA_ARCH_LIST='$torch_arch' MAX_JOBS=$MAX_JOBS NVCC_THREADS=$NVCC_THREADS FLASH_ATTN_CUDA_ARCHS='$torch_arch'")
+    env+=("CIBW_ENVIRONMENT_WINDOWS=FLASH_ATTENTION_FORCE_BUILD=TRUE TORCH_SPEC=$torch CUDA_CHANNEL=cu$cuda TORCH_CUDA_ARCH_LIST='$torch_arch' MAX_JOBS=$MAX_JOBS NVCC_THREADS=$NVCC_THREADS FLASH_ATTN_CUDA_ARCHS='$torch_arch' DISTUTILS_USE_SDK=1")
   fi
   
   # Execute build
@@ -286,15 +296,19 @@ build_wheel() {
       uvx --with pip cibuildwheel --config-file "$CONFIG_FILE"
   )
   
-  # Rename wheel to include architecture information
-  local base=$(ls "${OUT_DIR}"/flash_attn-${fa_ver}*.whl 2>/dev/null | grep -E "${pyver}-${pyver}-(manylinux.*|win_amd64)" | sort -r | head -n1)
+  # Move and rename wheel from temp directory to final destination
+  local base=$(ls "${temp_dir}"/flash_attn-${fa_ver}*.whl 2>/dev/null | grep -E "${pyver}-${pyver}-(manylinux.*|win_amd64)" | sort -r | head -n1)
   if [[ -n "$base" ]]; then
     local new_name=$(get_wheel_name "$fa_ver" "$torch" "$cuda" "$archs" "$pyver" "$os")
-    if [[ "$(basename "$base")" != "$new_name" ]]; then
-      mv "$base" "${OUT_DIR}/${new_name}"
-      log "Renamed wheel to: $new_name"
-    fi
+    local dest="${OUT_DIR}/${new_name}"
+    mv "$base" "$dest"
+    log "Created wheel: $new_name"
+  else
+    log "Warning: No wheel found in temporary directory"
   fi
+  
+  # Cleanup temporary directory
+  rm -rf "$temp_dir"
 }
 
 # =============================================================================

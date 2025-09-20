@@ -20,13 +20,14 @@ curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin s
 
 before-build = """
 PY=$(python -c 'import sys; print(sys.executable)')
-uv pip install --python "$PY" --system -U pip setuptools wheel packaging ninja psutil
-uv pip install --python "$PY" --system -U "torch==$TORCH_SPEC" --index-url https://download.pytorch.org/whl/$CUDA_CHANNEL
+uv pip install --python "$PY" -U pip setuptools wheel packaging ninja psutil
+uv pip install --python "$PY" "torch~=$TORCH_SPEC.0" --index-url https://download.pytorch.org/whl/$CUDA_CHANNEL
 """
 
 before-test = """
-pip install -U pip
-pip install "torch==$TORCH_SPEC" --index-url https://download.pytorch.org/whl/$CUDA_CHANNEL
+PY=$(python -c 'import sys; print(sys.executable)')
+uv pip install --python "$PY" -U pip
+uv pip install --python "$PY" "torch~=$TORCH_SPEC.0" --index-url https://download.pytorch.org/whl/$CUDA_CHANNEL
 """
 
 # Exclude CUDA runtime and torch .so files
@@ -59,9 +60,9 @@ git config --global core.longpaths true && call "C:\Program Files\Microsoft Visu
 '''
 
 before-build = '''
-python -m pip install -U pip setuptools wheel packaging ninja cmake psutil && python -m pip install torch==%TORCH_SPEC% --index-url https://download.pytorch.org/whl/%CUDA_CHANNEL% && python -m pip install triton-windows
+for /f "delims=" %i in ('python -c "import sys; print(sys.executable)"') do (uv pip install --python "%i" -U pip setuptools wheel packaging ninja cmake psutil && uv pip install --python "%i" torch~=%TORCH_SPEC%.0 --index-url https://download.pytorch.org/whl/%CUDA_CHANNEL% && uv pip install --python "%i" triton-windows xformers)
 '''
 
-before-test = """
-python -m pip install -U pip && python -m pip install "torch==%TORCH_SPEC%" --index-url https://download.pytorch.org/whl/%CUDA_CHANNEL% && python -m pip install triton-windows
-"""
+before-test = '''
+for /f "delims=" %i in ('python -c "import sys; print(sys.executable)"') do (uv pip install --python "%i" -U pip && uv pip install --python "%i" torch~=%TORCH_SPEC%.0 --index-url https://download.pytorch.org/whl/%CUDA_CHANNEL% && uv pip install --python "%i" triton-windows xformers)
+'''
