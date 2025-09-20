@@ -8,10 +8,10 @@ export CIBW_BUILD_VERBOSITY=3
 
 # ======== Configuration ========
 : "${FA_REPO:=https://github.com/Dao-AILab/flash-attention.git}"
-: "${FA_VERSIONS:=2.8.2}"
+: "${FA_VERSIONS:=2.8.2 2.8.3}"
 : "${TORCH_VERSIONS:=2.8 2.6}"
-: "${CUDA_VERSIONS:=126 128}"
-: "${CUDA_ARCHS:=80 86 89 90}"  # SM values
+: "${CUDA_VERSIONS:=126 128 129}"
+: "${CUDA_ARCHS:=80 86 89 90 100 120}"  # SM values
 : "${PYTHON_VERSIONS:=cp312 cp313}"
 : "${PLATFORMS:=linux}"
 : "${MAX_JOBS:=32}"
@@ -21,7 +21,7 @@ export CIBW_BUILD_VERBOSITY=3
 # Directories
 ROOT_DIR="$(pwd)"
 SRC_DIR="${ROOT_DIR}/src"
-OUT_DIR="${ROOT_DIR}/wheelhouse"
+OUT_DIR="${ROOT_DIR}/dist"
 CONFIG_FILE="${ROOT_DIR}/cibuildwheel.toml"
 
 # Docker images for Linux

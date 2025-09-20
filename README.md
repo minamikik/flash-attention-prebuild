@@ -6,6 +6,20 @@ A comprehensive build system for pre-building Flash Attention wheel files across
 
 This project uses [cibuildwheel](https://cibuildwheel.readthedocs.io/) to automatically build Flash Attention for various environments. It supports both Windows and Linux platforms, generating optimized wheels for different combinations of Python versions, PyTorch versions, CUDA versions, and GPU architectures (SM versions).
 
+### Build Scripts
+
+The project provides two build scripts with different strategies:
+
+1. **`build.sh`** - Multi-architecture build (recommended for general use)
+   - Builds wheels containing multiple GPU architectures in a single file
+   - Output: `flash_attn-2.8.2+cu126torch2.8-cp312-cp312-manylinux_2_24_x86_64.whl`
+   - Smaller total download size, automatic architecture selection at runtime
+
+2. **`build_per_sm.sh`** - Single-architecture build
+   - Builds separate wheels for each GPU architecture
+   - Output: `flash_attn-2.8.2+cu126torch2.8sm86-cp312-cp312-linux_x86_64.whl`
+   - More granular control, smaller individual file sizes
+
 ### Key Features
 - CSV-based compatibility matrix for valid PyTorch/CUDA/SM combinations
 - Automatic dependency resolution and version matching
@@ -28,53 +42,69 @@ This project uses [cibuildwheel](https://cibuildwheel.readthedocs.io/) to automa
 
 ## Quick Start
 
+### Multi-Architecture Build (Recommended)
+
 ```bash
 # Build with default settings
-bash build_new.sh
+bash build.sh
 
 # Build for specific versions
-TORCH_VERSIONS="2.8" CUDA_VERSIONS="128" bash build_new.sh
+TORCH_VERSIONS="2.8" CUDA_VERSIONS="128" bash build.sh
 
-# Build for specific architectures
-CUDA_ARCHS="80 86 89 90" bash build_new.sh
+# Build for specific architectures (will be combined into single wheels)
+CUDA_ARCHS="80 86 89 90" bash build.sh
 
 # Windows-only build
-PLATFORMS="windows" bash build_new.sh
+PLATFORMS="windows" bash build.sh
 
 # Rebuild existing wheels
-OVERWRITE=true bash build_new.sh
+OVERWRITE=true bash build.sh
 ```
 
-Built wheel files will be placed in `wheelhouse/` directory with the naming format:
-`flash_attn-<ver>+cu<cuda>torch<torch>sm<arch>-<py>-<py>-<platform>.whl`
+Output format: `flash_attn-<ver>+cu<cuda>torch<torch>-<py>-<py>-<platform>.whl`
+
+### Per-Architecture Build
+
+```bash
+# Build separate wheels for each architecture
+bash build_per_sm.sh
+
+# Build for specific architectures only
+CUDA_ARCHS="86 89" bash build_per_sm.sh
+
+# Build for specific CUDA/PyTorch versions
+TORCH_VERSIONS="2.8" CUDA_VERSIONS="128" bash build_per_sm.sh
+```
+
+Output format: `flash_attn-<ver>+cu<cuda>torch<torch>sm<arch>-<py>-<py>-<platform>.whl`
+
+Built wheel files will be placed in `dist/` directory.
 
 ## Configuration Variables
 
-The behavior of build_new.sh can be controlled via environment variables:
+The behavior of both build scripts can be controlled via environment variables:
 
 ### Basic Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FA_REPO` | `https://github.com/Dao-AILab/flash-attention.git` | Flash Attention repository URL |
-| `FA_VERSIONS` | `2.8.2` | Flash Attention versions to build (space-separated) |
-| `TORCH_VERSIONS` | `2.8 2.7 2.6` | PyTorch versions (space-separated) |
-| `CUDA_VERSIONS` | `126 128` | CUDA versions without 'cu' prefix (space-separated) |
-| `CUDA_ARCHS` | `80 86 89 90 120` | SM architectures to build for (space-separated) |
+| `FA_VERSIONS` | `2.8.2 2.8.3` | Flash Attention versions to build (space-separated) |
+| `TORCH_VERSIONS` | `2.8 2.6` | PyTorch versions (space-separated) |
+| `CUDA_VERSIONS` | `126 128 129` | CUDA versions without 'cu' prefix (space-separated) |
+| `CUDA_ARCHS` | `80 86 89 120` | SM architectures to build for (space-separated) |
 | `PYTHON_VERSIONS` | `cp312 cp313` | Python versions for all platforms |
-| `PLATFORMS` | `linux windows` | Target platforms (space-separated) |
+| `PLATFORMS` | `linux` | Target platforms (space-separated) |
 
 ### Build Performance
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MAX_JOBS` | `32` | Number of parallel compilation jobs |
-| `NVCC_THREADS` | `4` | Number of threads for NVCC compilation |
+| `MAX_JOBS` | `12` | Number of parallel compilation jobs |
+| `NVCC_THREADS` | `2` | Number of threads for NVCC compilation |
 | `OVERWRITE` | `false` | Set to `true` to rebuild existing wheels |
 
 ### GPU Architecture Values (SM)
-- `70`: Volta (V100)
-- `75`: Turing (RTX 20xx, T4)
 - `80`: Ampere (A100)
 - `86`: Ampere (RTX 30xx, A40, L4)
 - `89`: Ada Lovelace (RTX 40xx, L40)
@@ -82,34 +112,36 @@ The behavior of build_new.sh can be controlled via environment variables:
 - `100`: Blackwell (B100, B200) - Requires PyTorch 2.8+ with CUDA 12.8+
 - `120`: Blackwell (RTX 5090) - Requires PyTorch 2.8+ with CUDA 12.8+
 
+Note: SM70/75 (Volta/Turing) and older architectures are not included in default builds
+
 ## Examples
 
 ### Building Multiple Versions
 ```bash
-FA_VERSIONS="2.8.2 2.8.3" TORCH_VERSIONS="2.7 2.8" bash build_new.sh
+FA_VERSIONS="2.8.2 2.8.3" TORCH_VERSIONS="2.7 2.8" bash build.sh
 ```
 
 ### Building for Specific GPU Architectures
 ```bash
 # Modern GPUs only (Ampere and newer)
-CUDA_ARCHS="80 86 89 90" bash build_new.sh
+CUDA_ARCHS="80 86 89 90" bash build.sh
 
 # Include Blackwell GPUs
-CUDA_ARCHS="86 89 90 100 120" TORCH_VERSIONS="2.8" CUDA_VERSIONS="128" bash build_new.sh
+CUDA_ARCHS="86 89 90 100 120" TORCH_VERSIONS="2.8" CUDA_VERSIONS="128" bash build.sh
 ```
 
 ### Building for All Python Versions
 ```bash
-PYTHON_VERSIONS="cp310 cp311 cp312 cp313" bash build_new.sh
+PYTHON_VERSIONS="cp310 cp311 cp312 cp313" bash build.sh
 ```
 
 ### Platform-Specific Builds
 ```bash
 # Windows only with CUDA 12.6
-PLATFORMS="windows" CUDA_VERSIONS="126" bash build_new.sh
+PLATFORMS="windows" CUDA_VERSIONS="126" bash build.sh
 
 # Linux only with latest CUDA
-PLATFORMS="linux" CUDA_VERSIONS="128 129" bash build_new.sh
+PLATFORMS="linux" CUDA_VERSIONS="128 129" bash build.sh
 ```
 
 ## Compatibility Matrix
@@ -119,14 +151,20 @@ The project uses `torch_cuda_sm_matrix.csv` to determine valid combinations. Key
 ### PyTorch and CUDA Versions
 | PyTorch | Available CUDA Versions | Notes |
 |---------|------------------------|-------|
-| 2.6.x | cu118, cu124, cu126 | - |
-| 2.7.x | cu118, cu126, cu128 | cu128 adds Blackwell support |
-| 2.8.x | cu126, cu128, cu129 | cu128/cu129 remove Maxwell/Pascal |
+| 2.6.x | cu126 | Stable release |
+| 2.8.x | cu126, cu128, cu129 | cu128/cu129 adds Blackwell support |
+
+### Architecture Support by CUDA Version
+| CUDA | Supported Architectures | Notes |
+|------|------------------------|-------|
+| 12.6 | SM80, SM86, SM89, SM90 | No Blackwell support |
+| 12.8 | SM80, SM86, SM89, SM90, SM100, SM120 | Full Blackwell support |
+| 12.9 | SM80, SM86, SM89, SM90, SM100, SM120 | Latest version |
 
 ### Architecture Support Changes
 - **PyTorch 2.8 + CUDA 12.8/12.9**: Removes support for Maxwell (SM5x) and Pascal (SM6x)
 - **SM100/SM120 (Blackwell)**: Requires PyTorch 2.8+ with CUDA 12.8+
-- **SM120**: Not supported in CUDA 12.6
+- **SM89 (RTX 4090)**: Supported across all CUDA versions
 
 ## Troubleshooting
 
@@ -151,26 +189,31 @@ Check the compatibility matrix in `torch_cuda_sm_matrix.csv`. Invalid combinatio
 ### Slow Build
 Adjust parallel jobs and NVCC threads:
 ```bash
-MAX_JOBS=16 NVCC_THREADS=2 bash build_new.sh
+MAX_JOBS=16 NVCC_THREADS=2 bash build.sh
 ```
 
 ## Directory Structure
 
 ```
 .
-├── build_new.sh              # Main build script
-├── cibuildwheel.toml         # cibuildwheel configuration
-├── torch_cuda_sm_matrix.csv  # Compatibility matrix
-├── CLAUDE.md                 # Development notes and best practices
-├── src/                      # Flash Attention source code (auto-cloned)
-│   └── flash-attention-*/
-└── wheelhouse/               # Built wheel files
-    └── *.whl                 # Format: flash_attn-<ver>+cu<cuda>torch<torch>sm<arch>-<py>-<py>-<platform>.whl
+├── build.sh                  # Multi-architecture build script
+├── build_per_sm.sh          # Per-architecture build script
+├── cibuildwheel.toml        # cibuildwheel configuration
+├── torch_cuda_sm_matrix.csv # Compatibility matrix
+├── CLAUDE.md                # Development documentation
+├── src/                     # Flash Attention source code (auto-cloned)
+│   ├── flash-attention-2.8.2/
+│   └── flash-attention-2.8.3/
+├── dist/                    # Multi-architecture wheels
+│   └── *.whl               # Format: flash_attn-{ver}+cu{cuda}torch{torch}-{py}-{py}-{platform}.whl
+└── wheelhouse/             # Per-architecture wheels
+    └── *.whl               # Format: flash_attn-{ver}+cu{cuda}torch{torch}sm{arch}-{py}-{py}-{platform}.whl
 ```
 
 ## Key Files
 
-- **build_new.sh**: Main orchestration script with compatibility checking
+- **build.sh**: Multi-architecture build script that combines multiple GPU architectures into single wheels
+- **build_per_sm.sh**: Per-architecture build script that creates separate wheels for each GPU architecture
 - **torch_cuda_sm_matrix.csv**: Defines valid PyTorch/CUDA/SM combinations
 - **cibuildwheel.toml**: Platform-specific build configurations
 - **CLAUDE.md**: Detailed development documentation and lessons learned

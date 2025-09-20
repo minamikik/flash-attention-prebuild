@@ -1,269 +1,348 @@
-#!/usr/bin/env bash
-# Windows (Git Bash) assumed. Fetches FlashAttention → checks out each version →
-# mass produces Windows + Linux wheels using cibuildwheel.
+#!/bin/bash
 set -euo pipefail
 
-curl -LsSf https://astral.sh/uv/install.sh | sh
-export CIBW_BUILD_VERBOSITY=3
+# =============================================================================
+# Configuration
+# =============================================================================
+CIBW_BUILD_VERBOSITY="${CIBW_BUILD_VERBOSITY:-1}"
+FA_REPO="${FA_REPO:-https://github.com/Dao-AILab/flash-attention.git}"
+FA_VERSIONS="${FA_VERSIONS:-2.8.2 2.8.3}"
+TORCH_VERSIONS="${TORCH_VERSIONS:-2.8 2.6}"
+CUDA_VERSIONS="${CUDA_VERSIONS:-126 128 129}"
+CUDA_ARCHS="${CUDA_ARCHS:-80 86 89 120}"
+PYTHON_VERSIONS="${PYTHON_VERSIONS:-cp312 cp313}"
+PLATFORMS="${PLATFORMS:-linux}"
+MAX_JOBS="${MAX_JOBS:-12}"
+NVCC_THREADS="${NVCC_THREADS:-2}"
+OVERWRITE="${OVERWRITE:-false}"
 
-# ======== Variable parameters (can be overridden via environment variables) ========
-: "${FA_REPO_URL:=https://github.com/Dao-AILab/flash-attention.git}"
-
-# FlashAttention versions (tags) to build simultaneously: space-separated
-# e.g. "${FA_VERSIONS:=2.8.2 2.8.3}
-: "${FA_VERSIONS:=2.8.2}"
-
-# Torch major.minor series (patch is left as * wildcard)
-# e.g. "${TORCH_SERIES:=2.6 2.7 2.8}"
-: "${TORCH_SERIES:=2.8 2.7 2.6}"
-
-# CUDA channels (cu126 / cu128 / cu129)
-# e.g. "${CUDA_SETS:=126 128}"
-: "${CUDA_SETS:=126 128}"
-
-# Python versions to build (tag names)
-# e.g. "${PY_WIN:=cp310 cp311 cp312}"
-# e.g. "${PY_LINUX:=cp310 cp311 cp312}"
-: "${PY_WIN:=cp312 cp313}"
-: "${PY_LINUX:=cp312 cp313}"
-
-# Docker images for Linux builds (manylinux + CUDA)
-# PyTorch official manylinux2_28-builder recommended if available (tags may change)
-: "${LINUX_IMAGE_CU126:=pytorch/manylinux2_28-builder:cuda12.6}"
-: "${LINUX_IMAGE_CU128:=pytorch/manylinux2_28-builder:cuda12.8}"
-: "${LINUX_IMAGE_CU129:=pytorch/manylinux2_28-builder:cuda12.9}"
-
-# Alternative (fallback when above tags unavailable. Less compatible manylinux_2_34)
-: "${ALT_LINUX_IMAGE_CU126:=sameli/manylinux_2_34_x86_64_cuda_12.6}"
-: "${ALT_LINUX_IMAGE_CU128:=sameli/manylinux_2_34_x86_64_cuda_12.8}"
-: "${ALT_LINUX_IMAGE_CU129:=sameli/manylinux_2_34_x86_64_cuda_12.9}"
-
-# Number of parallel jobs for cibuildwheel
-: "${MAX_JOBS:=32}"
-# Number of parallel jobs for nvcc (if applicable)
-: "${NVCC_THREADS:=2}"
-
-# GPU architectures to build (space-separated)
-# 75=Turing, 80=Ampere(A100), 86=Ampere(L4, RTX30xx), 89=Ada(RTX40xx), 90=Hopper(H100), 120=Blackwell
-# e.g. "${FLASH_ATTN_CUDA_ARCHS:=80 86 89 90}"
-: "${FLASH_ATTN_CUDA_ARCHS:=80 86 89 90 120}"
-
-# ======== No need to edit below this line ========
-ROOT_DIR="$(pwd)"
+# Paths
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="${ROOT_DIR}/src"
-WHEEL_DIR="${ROOT_DIR}/wheelhouse"
-mkdir -p "${SRC_DIR}" "${WHEEL_DIR}"
+OUT_DIR="${ROOT_DIR}/dist"
+CONFIG_FILE="${ROOT_DIR}/cibuildwheel.toml"
 
-# --- Prerequisite checks ---
-need() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: '$1' is required" >&2; exit 1; }; }
-need git
-need bash
-need uvx || true  # uvx comes with uv >= 0.4. If not, run 'uv tool install cibuildwheel' then use 'uvx'
-need docker || { echo "ERROR: Docker Desktop (WSL2 backend) is required."; exit 1; }
+# Docker images for Linux builds
+declare -A LINUX_IMAGES=(
+  ["118"]="pytorch/manylinux2_28-builder:cuda11.8"
+  ["121"]="pytorch/manylinux2_28-builder:cuda12.1"
+  ["124"]="pytorch/manylinux2_28-builder:cuda12.4"
+  ["126"]="pytorch/manylinux2_28-builder:cuda12.6"
+  ["128"]="pytorch/manylinux2_28-builder:cuda12.8"
+  ["129"]="pytorch/manylinux2_28-builder:cuda12.9"
+)
 
-# Windows CUDA switching (concurrent installation recommended)
-set_cuda_windows() {
-  local cu="$1"  # 126 / 128 / 129
-  local var="CUDA_PATH_V${cu}"
-  local val="${!var:-}"
-  if [[ -z "${val}" ]]; then
-    echo "[windows] WARNING: ${var} not set, skipping Windows build for ${cu}" >&2
-    return 1
-  fi
-  export CUDA_PATH="${val}"
-  case "$OSTYPE" in
-    msys*|cygwin*) export PATH="${CUDA_PATH}/bin:${PATH}" ;;
-  esac
-  export CUDACXX="${CUDA_PATH}/bin/nvcc.exe"
-  return 0
-}
+# Compatibility matrix (loaded from CSV)
+declare -A COMPAT_MATRIX
+# torch-cuda -> sm architectures mapping
+declare -A TORCH_CUDA_ARCHS
 
-# Check if Torch × CUDA combination exists
-is_supported_combo() {
-  local tv="$1" ; local cu="$2"  # tv: 2.6 / 2.7 / 2.8, cu: 126/128/129
-  case "$tv" in
-    2.6) [[ "$cu" == "126" ]] && return 0 || return 1 ;;
-    2.7) [[ "$cu" == "126" || "$cu" == "128" ]] && return 0 || return 1 ;;
-    2.8) [[ "$cu" == "126" || "$cu" == "128" || "$cu" == "129" ]] && return 0 || return 1 ;;
-    *) return 1 ;;
-  esac
-}
+# =============================================================================
+# Utility Functions
+# =============================================================================
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] $*" >&2; }
+die() { echo "$(date '+%Y-%m-%d %H:%M:%S') [ERROR] $*" >&2; exit 1; }
 
-linux_image_for() {
-  local cu="$1"
-  case "$cu" in
-    126) echo "${LINUX_IMAGE_CU126}" ;;
-    128) [[ -n "${LINUX_IMAGE_CU128}" ]] && echo "${LINUX_IMAGE_CU128}" || echo "${ALT_LINUX_IMAGE_CU128}" ;;
-    129) [[ -n "${LINUX_IMAGE_CU129}" ]] && echo "${LINUX_IMAGE_CU129}" || echo "${ALT_LINUX_IMAGE_CU129}" ;;
-  esac
-}
-
-# Resolve tag name for specified version (v2.8.2 or 2.8.2)
-resolve_tag() {
-  local ver="$1"
-  local found=""
-  # First look for tags in remote (prefer v-prefixed)
-  if git ls-remote --tags --refs "${FA_REPO_URL}" | grep -q -E "refs/tags/v?${ver}$"; then
-    if git ls-remote --tags --refs "${FA_REPO_URL}" | grep -q -E "refs/tags/v${ver}$"; then
-      found="v${ver}"
-    else
-      found="${ver}"
-    fi
-  fi
-  echo "${found}"
-}
-
-# Fetch source for specified version
-prepare_source() {
-  local ver="$1"
-  local dest="${SRC_DIR}/flash-attention-${ver}"
-  if [[ -d "${dest}" ]]; then
-    echo "[src] already prepared: ${dest}"
-    return 0
-  fi
-  local tag; tag="$(resolve_tag "${ver}")"
-  if [[ -z "${tag}" ]]; then
-    echo "ERROR: tag for ${ver} not found in ${FA_REPO_URL}" >&2
-    exit 1
-  fi
-  echo "[src] cloning ${FA_REPO_URL} @ ${tag} -> ${dest}"
-  git clone --depth 1 --branch "${tag}" "${FA_REPO_URL}" "${dest}"
-}
-
-# Build one case (FA version × Torch × CUDA × GPU architecture × Python × OS)
-build_one() {
-  local ver="$1"       # FA version (e.g., 2.8.2)
-  local torch="$2"     # 2.6 / 2.7 / 2.8
-  local cu="$3"        # 126 / 128 / 129
-  local arch="$4"      # 80 / 86 / 89 / 90
-  local pyver="$5"     # cp312 / cp313
-  local os="$6"        # linux / windows
-
-  local proj="${SRC_DIR}/flash-attention-${ver}"
-  local outdir="${WHEEL_DIR}/fa${ver}/torch${torch}/cu${cu}/sm${arch}/${pyver}/${os}"
-  mkdir -p "${outdir}"
+# =============================================================================
+# Load compatibility matrix and build torch-cuda -> archs mapping
+# =============================================================================
+load_compatibility_matrix() {
+  local csv_file="${ROOT_DIR}/torch_cuda_sm_matrix.csv"
+  [[ ! -f "$csv_file" ]] && die "Compatibility matrix not found: $csv_file"
   
-  # Convert architecture to TORCH_CUDA_ARCH_LIST format
-  # 2-digit: 86 -> 8.6, 3-digit: 120 -> 12.0
-  local torch_arch
-  if [[ ${#arch} -eq 2 ]]; then
-    torch_arch="${arch:0:1}.${arch:1}"
-  elif [[ ${#arch} -eq 3 ]]; then
-    torch_arch="${arch:0:2}.${arch:2}"
-  else
-    echo "ERROR: Invalid architecture format: ${arch}" >&2
-    return 1
-  fi
-
-  # Build based on OS
-  if [[ "${os}" == "linux" ]]; then
-    # ---- Linux (manylinux_x86_64) ----
-    local img; img="$(linux_image_for "${cu}")"
-    if [[ -n "${img}" ]]; then
-      echo "[linux] FA ${ver} | torch ${torch}.* | cu${cu} | SM${arch} | ${pyver} | image=${img}"
-      CIBW_PLATFORM=linux \
-      CIBW_BUILD="${pyver}-manylinux_x86_64" \
-      CIBW_SKIP="*-musllinux_*" \
-      CIBW_OUTPUT_DIR="${outdir}" \
-      CIBW_MANYLINUX_X86_64_IMAGE="${img}" \
-      CIBW_TEST_COMMAND='python -c "import flash_attn; print(\"import-ok\")"' \
-      CIBW_ENVIRONMENT="\
-          MAX_JOBS=${MAX_JOBS} \
-          NVCC_THREADS=${NVCC_THREADS} \
-          TORCH_CUDA_ARCH_LIST='${torch_arch}' \
-          FLASH_ATTN_CUDA_ARCHS='${arch}' \
-          CXXFLAGS='-D_GLIBCXX_USE_CXX11_ABI=1' \
-          TORCH_SPEC=${torch}.* \
-          CUDA_CHANNEL=cu${cu} \
-      " \
-      uvx cibuildwheel --platform linux --config-file "${ROOT_DIR}/cibuildwheel.toml" "${proj}"
-      
-      # Rename wheels to include SM architecture
-      for wheel in "${outdir}"/*.whl; do
-        if [[ -f "$wheel" ]]; then
-          base=$(basename "$wheel")
-          # Insert -sm{arch} before the platform tag
-          new_name=$(echo "$base" | sed -E "s/(-cp[0-9]+-cp[0-9]+)(-linux|-manylinux)/\1_sm${arch}\2/")
-          if [[ "$base" != "$new_name" ]]; then
-            mv -v "$wheel" "${outdir}/$new_name"
-          fi
-        fi
-      done
+  # Skip header and load data
+  while IFS=, read -r torch cuda sm channel; do
+    # Normalize values
+    local cuda_norm="${cuda#cu}"  # Remove 'cu' prefix
+    local sm_norm="${sm//./}"     # Remove dots (8.6 -> 86)
+    
+    # Store in compatibility matrix
+    local key="${torch}-${cuda_norm}-${sm_norm}"
+    COMPAT_MATRIX["$key"]="$channel"
+    
+    # Build torch-cuda -> archs mapping
+    local tc_key="${torch}-${cuda_norm}"
+    if [[ -v TORCH_CUDA_ARCHS["$tc_key"] ]]; then
+      # Append if not already in the list
+      if [[ ! " ${TORCH_CUDA_ARCHS[$tc_key]} " =~ " ${sm_norm} " ]]; then
+        TORCH_CUDA_ARCHS["$tc_key"]+=" ${sm_norm}"
+      fi
     else
-      echo "[linux] no image for cu${cu}; skip"
+      TORCH_CUDA_ARCHS["$tc_key"]="${sm_norm}"
     fi
-  elif [[ "${os}" == "windows" ]]; then
-    # ---- Windows (win_amd64) ----
-    if set_cuda_windows "${cu}"; then
-      echo "[windows] FA ${ver} | torch ${torch}.* | cu${cu} | SM${arch} | ${pyver} | CUDA_PATH=${CUDA_PATH}"
-      CIBW_PLATFORM=windows \
-      CIBW_BUILD="${pyver}-win_amd64" \
-      CIBW_SKIP="" \
-      CIBW_OUTPUT_DIR="${outdir}" \
-      CIBW_TEST_COMMAND='python -c "import flash_attn; print(\"import-ok\")"' \
-      CIBW_ENVIRONMENT_WINDOWS="\
-          MAX_JOBS=${MAX_JOBS} \
-          NVCC_THREADS=${NVCC_THREADS} \
-          TORCH_CUDA_ARCH_LIST='${torch_arch}' \
-          FLASH_ATTN_CUDA_ARCHS='${arch}' \
-          TORCH_SPEC=${torch}.* \
-          CUDA_CHANNEL=cu${cu} \
-          CMAKE_GENERATOR=Ninja \
-      " \
-      uvx cibuildwheel --platform windows --config-file "${ROOT_DIR}/cibuildwheel.toml" "${proj}"
-      
-      # Rename wheels to include SM architecture
-      for wheel in "${outdir}"/*.whl; do
-        if [[ -f "$wheel" ]]; then
-          base=$(basename "$wheel")
-          # Insert -sm{arch} before the platform tag
-          new_name=$(echo "$base" | sed -E "s/(-cp[0-9]+-cp[0-9]+)(-win)/\1_sm${arch}\2/")
-          if [[ "$base" != "$new_name" ]]; then
-            mv -v "$wheel" "${outdir}/$new_name"
-          fi
-        fi
-      done
-    else
-      echo "[windows] CUDA cu${cu} toolchain not configured; skipped."
-    fi
-  else
-    echo "ERROR: Invalid OS: ${os}" >&2
-    return 1
-  fi
-
+  done < <(tail -n +2 "$csv_file")
+  
+  log "Loaded ${#COMPAT_MATRIX[@]} compatibility entries from CSV"
+  log "Created ${#TORCH_CUDA_ARCHS[@]} torch-cuda combinations"
 }
 
-# ====== Main process ======
-echo ">>> Prepare sources..."
-for ver in ${FA_VERSIONS}; do
-  prepare_source "${ver}"
-done
-
-echo ">>> Build matrix..."
-IFS_save="$IFS"
-for ver in ${FA_VERSIONS}; do
-  for tv in ${TORCH_SERIES}; do
-    for cu in ${CUDA_SETS}; do
-      if is_supported_combo "${tv}" "${cu}"; then
-        for arch in ${FLASH_ATTN_CUDA_ARCHS}; do
-          # Build for Linux with each Python version
-          for pyver in ${PY_LINUX}; do
-            echo "=== Build: FA ${ver} × Torch ${tv}.* × cu${cu} × SM${arch} × ${pyver} × Linux ==="
-            build_one "${ver}" "${tv}" "${cu}" "${arch}" "${pyver}" "linux"
-          done
-          # Build for Windows with each Python version
-          for pyver in ${PY_WIN}; do
-            echo "=== Build: FA ${ver} × Torch ${tv}.* × cu${cu} × SM${arch} × ${pyver} × Windows ==="
-            build_one "${ver}" "${tv}" "${cu}" "${arch}" "${pyver}" "windows"
-          done
-        done
-      else
-        echo "[skip] torch ${tv}.* + cu${cu} skipped as no public wheels available"
+# =============================================================================
+# Get all supported architectures for a torch/cuda combination
+# Filter by CUDA_ARCHS variable to only include requested architectures
+# =============================================================================
+get_supported_archs() {
+  local torch=$1
+  local cuda=$2
+  local key="${torch}-${cuda}"
+  
+  if [[ -v TORCH_CUDA_ARCHS["$key"] ]]; then
+    local all_archs="${TORCH_CUDA_ARCHS[$key]}"
+    local filtered_archs=""
+    
+    # Filter architectures based on CUDA_ARCHS variable
+    for arch in $all_archs; do
+      if [[ " $CUDA_ARCHS " =~ " $arch " ]]; then
+        if [[ -z "$filtered_archs" ]]; then
+          filtered_archs="$arch"
+        else
+          filtered_archs+=" $arch"
+        fi
       fi
     done
-  done
-done
-IFS="$IFS_save"
+    
+    echo "$filtered_archs"
+  else
+    echo ""
+  fi
+}
 
-echo
-echo "✅ Complete: Output placed in ${WHEEL_DIR}/fa<ver>/torch<series>/cu<xxx>/sm<arch>/<pyver>/<os>/"
+# =============================================================================
+# Convert architecture to decimal format for TORCH_CUDA_ARCH_LIST
+# =============================================================================
+arch_to_decimal() {
+  local arch=$1
+  case $arch in
+    50) echo "5.0" ;;
+    60) echo "6.0" ;;
+    70) echo "7.0" ;;
+    75) echo "7.5" ;;
+    80) echo "8.0" ;;
+    86) echo "8.6" ;;
+    89) echo "8.9" ;;
+    90) echo "9.0" ;;
+    100) echo "10.0" ;;
+    120) echo "12.0" ;;
+    *) echo "$arch" ;;
+  esac
+}
+
+# =============================================================================
+# Convert architecture list to decimal format (e.g., "80 86 89" -> "8.0;8.6;8.9")
+# =============================================================================
+archs_to_decimal_list() {
+  local archs=$1
+  local result=""
+  
+  for arch in $archs; do
+    local decimal=$(arch_to_decimal "$arch")
+    if [[ -z "$result" ]]; then
+      result="$decimal"
+    else
+      result="${result};${decimal}"
+    fi
+  done
+  
+  echo "$result"
+}
+
+# =============================================================================
+# Sort architectures numerically
+# =============================================================================
+sort_archs() {
+  local archs=$1
+  echo "$archs" | tr ' ' '\n' | sort -n | tr '\n' ' ' | sed 's/ $//'
+}
+
+# =============================================================================
+# Setup CUDA environment on Windows
+# =============================================================================
+setup_cuda_win() {
+  local cuda=$1
+  
+  if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "cygwin" ]] || [[ "$OSTYPE" == "win32" ]]; then
+    # Try to find CUDA path
+    local var="CUDA_PATH_V${cuda}"
+    local path="${!var:-}"
+    
+    if [[ -z "$path" ]]; then
+      path="C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v${cuda:0:2}.${cuda:1}"
+      if [[ ! -d "$path" ]]; then
+        die "CUDA ${cuda} not found. Please set ${var} environment variable"
+      fi
+    fi
+    
+    export CUDA_PATH="$path"
+    export CUDACXX="${CUDA_PATH}/bin/nvcc"
+    export PATH="${CUDA_PATH}/bin:${PATH}"
+    log "Set up CUDA ${cuda} at ${CUDA_PATH}"
+  fi
+}
+
+# =============================================================================
+# Clone or update Flash Attention source
+# =============================================================================
+get_source() {
+  local ver=$1
+  local dir="${SRC_DIR}/flash-attention-${ver}"
+  
+  if [[ -d "$dir" ]]; then
+    log "Using existing source at $dir"
+  else
+    log "Cloning Flash Attention v${ver}..."
+    git clone --branch "v${ver}" --depth 1 "$FA_REPO" "$dir" || die "Failed to clone Flash Attention"
+  fi
+  
+  echo "$dir"
+}
+
+# =============================================================================
+# Generate wheel filename
+# =============================================================================
+get_wheel_name() {
+  local fa_ver=$1
+  local torch=$2
+  local cuda=$3
+  local archs=$4  # Space-separated list of archs (not used in filename)
+  local pyver=$5
+  local os=$6
+  
+  local plat
+  if [[ "$os" == "linux" ]]; then
+    plat="manylinux_2_24_x86_64"
+  else
+    plat="win_amd64"
+  fi
+  
+  echo "flash_attn-${fa_ver}+cu${cuda}torch${torch}-${pyver}-${pyver}-${plat}.whl"
+}
+
+# =============================================================================
+# Build wheel for a torch/cuda combination with all supported architectures
+# =============================================================================
+build_wheel() {
+  local fa_ver=$1
+  local torch=$2
+  local cuda=$3
+  local pyver=$4
+  local os=$5
+  
+  # Get all supported architectures for this torch/cuda combination
+  local archs=$(get_supported_archs "$torch" "$cuda")
+  if [[ -z "$archs" ]]; then
+    log "No supported architectures for PyTorch ${torch} + CUDA ${cuda}, skipping"
+    return 0
+  fi
+  
+  # Sort architectures for consistent naming
+  archs=$(sort_archs "$archs")
+  
+  log "Building for PyTorch ${torch} + CUDA ${cuda} with architectures: ${archs} (filtered from CUDA_ARCHS: ${CUDA_ARCHS})"
+  
+  # Check for existing wheel
+  local pattern="flash_attn-${fa_ver}+cu${cuda}torch${torch}-${pyver}-${pyver}-*.whl"
+  if [[ "$OVERWRITE" != "true" ]] && ls "${OUT_DIR}"/${pattern} 2>/dev/null | grep -q .; then
+    local existing_wheel=$(ls "${OUT_DIR}"/${pattern} 2>/dev/null | head -n1)
+    log "Wheel already exists: $(basename "$existing_wheel"), skipping"
+    return 0
+  fi
+  
+  # Get source
+  local src=$(get_source "$fa_ver")
+  
+  # Convert architectures to decimal format
+  local torch_arch=$(archs_to_decimal_list "$archs")
+  
+  # Determine platform and build tag
+  local platform
+  local build_tag="${pyver}-*"
+  if [[ "$os" == "linux" ]]; then
+    platform="linux"
+    local image="${LINUX_IMAGES[$cuda]}"
+    [[ -z "$image" ]] && die "No Linux image defined for CUDA ${cuda}"
+  else
+    platform="windows"
+    setup_cuda_win "$cuda"
+  fi
+  
+  # Build wheel using cibuildwheel
+  log "Building wheel with cibuildwheel..."
+  local env=(
+    "CIBW_PLATFORM=$platform"
+    "CIBW_BUILD=$build_tag"
+    "CIBW_OUTPUT_DIR=$OUT_DIR"
+  )
+  
+  if [[ "$os" == "linux" ]]; then
+    env+=("CIBW_MANYLINUX_X86_64_IMAGE=$image")
+    env+=("CIBW_ENVIRONMENT=TORCH_SPEC=$torch CUDA_CHANNEL=cu$cuda TORCH_CUDA_ARCH_LIST='$torch_arch' MAX_JOBS=$MAX_JOBS NVCC_THREADS=$NVCC_THREADS FLASH_ATTN_CUDA_ARCHS='$torch_arch'")
+  else
+    env+=("CIBW_ENVIRONMENT_WINDOWS=TORCH_SPEC=$torch CUDA_CHANNEL=cu$cuda TORCH_CUDA_ARCH_LIST='$torch_arch' MAX_JOBS=$MAX_JOBS NVCC_THREADS=$NVCC_THREADS FLASH_ATTN_CUDA_ARCHS='$torch_arch'")
+  fi
+  
+  # Execute build
+  (
+    cd "$src"
+    env "${env[@]}" CIBW_BUILD_VERBOSITY="$CIBW_BUILD_VERBOSITY" \
+      uvx --with pip cibuildwheel --config-file "$CONFIG_FILE"
+  )
+  
+  # Rename wheel to include architecture information
+  local base=$(ls "${OUT_DIR}"/flash_attn-${fa_ver}*.whl 2>/dev/null | grep -E "${pyver}-${pyver}-(manylinux.*|win_amd64)" | sort -r | head -n1)
+  if [[ -n "$base" ]]; then
+    local new_name=$(get_wheel_name "$fa_ver" "$torch" "$cuda" "$archs" "$pyver" "$os")
+    if [[ "$(basename "$base")" != "$new_name" ]]; then
+      mv "$base" "${OUT_DIR}/${new_name}"
+      log "Renamed wheel to: $new_name"
+    fi
+  fi
+}
+
+# =============================================================================
+# Main
+# =============================================================================
+main() {
+  log "Flash Attention Multi-Architecture Build Script"
+  log "=============================================="
+  log "Configuration:"
+  log "  FA_VERSIONS: $FA_VERSIONS"
+  log "  TORCH_VERSIONS: $TORCH_VERSIONS"
+  log "  CUDA_VERSIONS: $CUDA_VERSIONS"
+  log "  CUDA_ARCHS: $CUDA_ARCHS"
+  log "  PYTHON_VERSIONS: $PYTHON_VERSIONS"
+  log "  PLATFORMS: $PLATFORMS"
+  
+  # Create output directory
+  mkdir -p "$OUT_DIR" "$SRC_DIR"
+  
+  # Load compatibility matrix
+  load_compatibility_matrix
+  
+  # Main build loop - iterate by torch/cuda combinations
+  for fa_ver in $FA_VERSIONS; do
+    for torch in $TORCH_VERSIONS; do
+      for cuda in $CUDA_VERSIONS; do
+        # Check if this torch/cuda combination has any supported architectures
+        local supported_archs=$(get_supported_archs "$torch" "$cuda")
+        if [[ -z "$supported_archs" ]]; then
+          log "Skipping PyTorch ${torch} + CUDA ${cuda} (no supported architectures)"
+          continue
+        fi
+        
+        log "Processing PyTorch ${torch} + CUDA ${cuda} (architectures: ${supported_archs})"
+        
+        for pyver in $PYTHON_VERSIONS; do
+          for os in $PLATFORMS; do
+            log "Building Flash Attention ${fa_ver} for PyTorch ${torch}, CUDA ${cuda}, Python ${pyver}, ${os}"
+            build_wheel "$fa_ver" "$torch" "$cuda" "$pyver" "$os" || true
+          done
+        done
+      done
+    done
+  done
+  
+  log "Build process completed!"
+  log "Built wheels are in: $OUT_DIR"
+}
+
+# Run main function
+main "$@"

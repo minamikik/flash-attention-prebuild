@@ -182,3 +182,6 @@ src/*
 wheelhouse/*
 CLAUDE.md
 sandbox/*
+.claude/*
+CLAUDE.md
+.serena/*

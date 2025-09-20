@@ -1,7 +1,7 @@
 [tool.cibuildwheel]
 build-frontend = { name = "build", args = ["--no-isolation"] }
 skip = "*-musllinux_*"
-# 必要な環境変数をビルド環境へ通す
+# Pass necessary environment variables to the build environment
 environment-pass = [
   "MAX_JOBS",
   "TORCH_CUDA_ARCH_LIST",
@@ -10,7 +10,7 @@ environment-pass = [
   "FLASH_ATTN_CUDA_ARCHS",
   "NVCC_THREADS",
 ]
-# インポートだけの簡易テスト
+# Simple import test
 test-command = "python -c \"import flash_attn; print('import-ok')\""
 
 [tool.cibuildwheel.linux]
@@ -29,7 +29,7 @@ pip install -U pip
 pip install "torch==$TORCH_SPEC" --index-url https://download.pytorch.org/whl/$CUDA_CHANNEL
 """
 
-# libcudart を除外せずに同梱する。torch の .so と libcuda は除外。
+# Exclude CUDA runtime and torch .so files
 repair-wheel-command = """
 LIBTORCH=$(python -c "import os, torch; print(os.path.join(os.path.dirname(torch.__file__), 'lib'))")
 export LD_LIBRARY_PATH="$LIBTORCH:/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib:$LD_LIBRARY_PATH"
@@ -40,7 +40,17 @@ auditwheel repair -w {dest_dir} {wheel} \
   --exclude libtorch_cuda.so \
   --exclude libtorch_cpu.so \
   --exclude libtorch_python.so \
-  --exclude libcuda.so.1
+  --exclude libcuda.so.1 \
+  --exclude libcudart.so.11 \
+  --exclude libcudart.so.12 \
+  --exclude libcublas.so.11 \
+  --exclude libcublas.so.12 \
+  --exclude libcublasLt.so.11 \
+  --exclude libcublasLt.so.12 \
+  --exclude libcudnn.so.8 \
+  --exclude libcudnn.so.9 \
+  --exclude libnvrtc.so.11.2 \
+  --exclude libnvrtc.so.12
 """
 
 [tool.cibuildwheel.windows]
@@ -49,9 +59,9 @@ git config --global core.longpaths true && call "C:\Program Files\Microsoft Visu
 '''
 
 before-build = '''
-uv pip install -U pip setuptools wheel packaging ninja cmake psutil && uv pip install torch==%TORCH_SPEC% --index-url https://download.pytorch.org/whl/%CUDA_CHANNEL% && uv pip install triton-windows
+python -m pip install -U pip setuptools wheel packaging ninja cmake psutil && python -m pip install torch==%TORCH_SPEC% --index-url https://download.pytorch.org/whl/%CUDA_CHANNEL% && python -m pip install triton-windows
 '''
 
 before-test = """
-uv pip install -U pip && uv pip install "torch==$TORCH_SPEC" --index-url https://download.pytorch.org/whl/$CUDA_CHANNEL && uv pip install triton-windows
+python -m pip install -U pip && python -m pip install "torch==%TORCH_SPEC%" --index-url https://download.pytorch.org/whl/%CUDA_CHANNEL% && python -m pip install triton-windows
 """
